@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Build output
+.next/
+dist/
+build/
+out/
+
+# Logs & OS
+*.log
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
