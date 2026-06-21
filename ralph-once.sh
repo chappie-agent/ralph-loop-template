@@ -10,8 +10,8 @@ claude --permission-mode acceptEdits -p \
   2. Fix any open gaps listed in review.md before picking a new task.
   3. Find the highest-priority incomplete task in PRD.md and implement it fully (no stubs, no TODOs).
   4. Mark that task done in PRD.md by changing its checkbox from '- [ ]' to '- [x]'.
-  5. Commit your changes with a conventional commit message (feat:, fix:, chore:, refactor:).
-  6. Append a one-line summary of what you did to progress.txt.
-  7. If you learned a reusable pattern or hit a gotcha, append it briefly to learnings.txt.
+  5. Append a one-line summary of what you did to progress.txt.
+  6. If you learned a reusable pattern or hit a gotcha, append it briefly to learnings.txt.
+  7. Commit ALL your changes (code, PRD.md, progress.txt, learnings.txt) in one conventional commit (feat:, fix:, chore:, refactor:).
 
   ONLY WORK ON A SINGLE TASK PER RUN."

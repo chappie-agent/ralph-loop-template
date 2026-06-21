@@ -28,9 +28,9 @@ for ((i=1; i<=ITERATIONS; i++)); do
     2. Fix any open gaps listed in review.md before picking a new task.
     3. Find the highest-priority incomplete task in PRD.md and implement it fully (no stubs, no TODOs).
     4. Mark that task done in PRD.md by changing its checkbox from '- [ ]' to '- [x]'.
-    5. Commit your changes with a conventional commit message.
-    6. Append a one-line summary to progress.txt.
-    7. If you learned a reusable pattern, append it briefly to learnings.txt.
+    5. Append a one-line summary to progress.txt.
+    6. If you learned a reusable pattern, append it briefly to learnings.txt.
+    7. Commit ALL your changes (code, PRD.md, progress.txt, learnings.txt) in one conventional commit.
 
     ONLY WORK ON A SINGLE TASK."
 
