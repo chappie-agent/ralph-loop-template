@@ -1,6 +1,8 @@
 #!/bin/bash
-# Stop hook — Claude cannot stop until all gates pass.
+# Stop hook — Claude cannot stop until the configured gates pass.
 # Exit 2 = block stop and ask Claude to fix. Exit 0 = allow stop.
+# Gates are bootstrap-tolerant: each runs only once it is actually configured,
+# so the project can build itself up task-by-task without the hook dead-locking.
 
 input=$(cat)
 
@@ -9,24 +11,33 @@ if [ "$(echo "$input" | jq -r '.stop_hook_active')" = "true" ]; then
   exit 0
 fi
 
-# Skip if no package.json yet (project not yet initialised)
+# Nothing to gate before there is a package.json
 if [ ! -f "package.json" ]; then
   exit 0
 fi
 
-if ! pnpm build --silent 2>&1; then
-  echo "Build/typecheck fails. Fix all errors before stopping." >&2
-  exit 2
+# Build — the hard gate (only if a build script exists)
+if grep -q '"build"' package.json; then
+  if ! pnpm build 2>&1; then
+    echo "Build/typecheck fails. Fix all errors before stopping." >&2
+    exit 2
+  fi
 fi
 
-if ! pnpm lint --silent 2>&1; then
-  echo "Lint fails. Fix all lint errors before stopping." >&2
-  exit 2
+# Lint — only once an ESLint config is present
+if grep -q '"lint"' package.json && ls .eslintrc* eslint.config.* >/dev/null 2>&1; then
+  if ! pnpm lint 2>&1; then
+    echo "Lint fails. Fix all lint errors before stopping." >&2
+    exit 2
+  fi
 fi
 
-if ! pnpm test --silent 2>&1; then
-  echo "Tests fail. Make all tests green before stopping." >&2
-  exit 2
+# Tests — only once a test script exists
+if grep -q '"test"' package.json; then
+  if ! pnpm test 2>&1; then
+    echo "Tests fail. Make all tests green before stopping." >&2
+    exit 2
+  fi
 fi
 
 exit 0
