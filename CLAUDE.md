@@ -30,7 +30,7 @@ Keep this list current per project.
 
 - **Supabase MCP** — all database work. `list_tables` before any schema change; `apply_migration` for DDL (never raw `execute_sql` for schema); `execute_sql` for reads/data; `get_advisors` after every schema change to catch RLS/security gaps; `get_logs` when debugging; `generate_typescript_types` after schema changes.
 - **Vercel MCP** — deploy, and read **build + runtime logs** when a deploy or production error needs debugging.
-- **GitHub MCP** — branches, PRs, commit/CI status. The loop commits and pushes locally; use this to open PRs or check CI.
+- **GitHub MCP** — branches, PRs, commit/CI status. The loop commits and pushes locally; use this to open PRs or check CI. All GitHub access goes through this MCP — don't shell out to `gh` or embed tokens. It is configured at **user scope** (`claude mcp add`, lives in `~/.claude.json`), so the token stays **outside the repo** — never commit a GitHub token.
 - **Context7 MCP** — before using an unfamiliar or version-sensitive library API, pull current docs instead of guessing.
 - **shadcn/ui MCP** — pull components and apply themes via the MCP rather than hand-writing component markup.
 - **Browser MCP** — verify UI changes: navigate to the page, interact, confirm, screenshot.
