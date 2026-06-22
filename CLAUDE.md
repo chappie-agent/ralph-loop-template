@@ -65,6 +65,8 @@ Keep this list current per project.
 
 Never commit broken code. A red build compounds across loops. *(The Stop hook in `.claude/hooks/verify.sh` enforces gates 1–3; make sure it runs these same `pnpm` commands.)*
 
+> **The gate only proves compile + lint + *unit* tests.** It does **not** exercise runtime/integration behaviour — API routes hitting the real DB, RLS, ORM/PostgREST queries, external API calls. Unit tests that mock those stay green while the live path is broken (a mocked test will never catch an ambiguous DB embed, a wrong env var, or an auth failure). For any task that touches the DB, an external API, or a real request path, **verify it live** before trusting "done": run the real call (build + start + `curl`, or the relevant MCP) and confirm the effect. The reviewer subagent reviews the diff, not the running system — runtime is yours to check.
+
 ## Files (source of truth — context is fresh each loop)
 
 - `PRD.md` — what to build. The agreed task list and source of truth. The loop picks the top open item.
