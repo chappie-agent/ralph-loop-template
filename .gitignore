@@ -18,6 +18,9 @@ out/
 *.log
 .DS_Store
 
+# Ralph supervised-loop runtime state (state/status/logs/lock — never commit)
+.ralph/
+
 # Editor
 .vscode/
 .idea/
