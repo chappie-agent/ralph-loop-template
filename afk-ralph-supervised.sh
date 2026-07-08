@@ -3,18 +3,27 @@
 #
 # Same job as afk-ralph.sh (implement → review → repeat against PRD.md), but
 # production-ready for unattended multi-hour runs:
-#   - detects Claude usage/rate limits in the output,
-#   - parses the reset time, waits LOCALLY past it (no tokens), then retries the
-#     SAME iteration (rate-limit retries are counted separately, not as failures),
-#   - circuit breaker after RALF_RATE_LIMIT_MAX_RETRIES,
-#   - checkpoint/state in .ralph/ (atomic JSON), live + rate-limit logs,
-#   - single-runner lockfile,
-#   - token-efficient tiered review (mini self-check every loop, diff review every
-#     N, full PRD review every M).
+#   - runs Claude with --output-format json and classifies every run as
+#     success / usage-limit / failure from the result envelope — no regex over
+#     prose, so a task about "rate limiting" can't fake a usage limit,
+#   - on a usage limit: parses the reset time, waits LOCALLY past it (no
+#     tokens), then retries the SAME iteration; circuit breaker after
+#     RALF_RATE_LIMIT_MAX_RETRIES,
+#   - on any other failure (CLI crash, denied tools, max-turns…): short
+#     backoff and retry; circuit breaker after RALF_MAX_CONSECUTIVE_FAILURES,
+#   - stall detection: an implement iteration that produces NO new commit
+#     counts toward RALF_MAX_NO_PROGRESS — the loop stops instead of burning
+#     tokens on a wedged task (a denied `git commit` looks exactly like this),
+#   - checkpoint/state in .ralph/ (atomic JSON), live + raw + rate-limit logs,
+#   - single-runner lock (flock, or a portable mkdir fallback on macOS),
+#   - token-efficient tiered review (mini self-check every loop, diff review
+#     every N, full PRD review every M).
 #
 # Resume model: Claude is invoked non-interactively (`claude -p`), so "resume"
-# means simply re-issuing the SAME `claude -p` call after the wait — no `continue`
-# needed. Override the binary with RALF_CLAUDE_BIN (e.g. the fake for tests).
+# means simply re-issuing the SAME `claude -p` call after the wait — no
+# `continue` needed. Override the binary with RALF_CLAUDE_BIN (e.g.
+# scripts/fake-claude.sh for offline tests); it must support
+# `--output-format json`.
 #
 # Usage: ./afk-ralph-supervised.sh [iterations]
 set -uo pipefail
@@ -26,15 +35,17 @@ source lib/ralph-lib.sh
 ITERATIONS="${1:-${RALF_ITERATIONS:-20}}"
 RALF_CLAUDE_BIN="${RALF_CLAUDE_BIN:-claude}"
 RALF_PERMISSION_MODE="${RALF_PERMISSION_MODE:-acceptEdits}"
+RALF_MAX_TURNS="${RALF_MAX_TURNS:-}"   # empty = no --max-turns flag
+RALF_GIT_PUSH="${RALF_GIT_PUSH:-0}"    # 1 = push after every committing iteration
 
 now_iso() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 git_q() { git "$@" 2>/dev/null; }
 
+ralph_preflight || exit 1
 mkdir -p "$RALPH_DIR"
 
 # --- single-runner lock (no double runners) --------------------------------
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
+if ! ralph_acquire_lock; then
   echo "Another supervised runner already holds $LOCK_FILE. Exiting." >&2
   exit 1
 fi
@@ -49,6 +60,8 @@ ralph_status_update() {
     task        "$(jq -r '.current_task // "?"'           "$STATE_FILE" 2>/dev/null)" \
     reset_at    "$(jq -r '.reset_at // ""'                "$STATE_FILE" 2>/dev/null)" \
     retries     "$(jq -r '.rate_limit_retry_count // "0"' "$STATE_FILE" 2>/dev/null)/$RALF_RATE_LIMIT_MAX_RETRIES" \
+    failures    "$(jq -r '.consecutive_failures // "0"'   "$STATE_FILE" 2>/dev/null)/$RALF_MAX_CONSECUTIVE_FAILURES" \
+    no_progress "$(jq -r '.no_progress_count // "0"'      "$STATE_FILE" 2>/dev/null)/$RALF_MAX_NO_PROGRESS" \
     commit      "$(jq -r '.git_commit // ""'              "$STATE_FILE" 2>/dev/null)" \
     updated     "$(date '+%H:%M:%S')"
 }
@@ -59,6 +72,7 @@ ralph_state_init() {
     last_completed_step "" next_step "implement" pause_reason "" \
     detected_limit_message "" reset_at "" resume_after "" \
     rate_limit_retry_count "0" max_rate_limit_retries "$RALF_RATE_LIMIT_MAX_RETRIES" \
+    consecutive_failures "0" no_progress_count "0" \
     last_successful_timestamp "" \
     git_branch "$(git_q rev-parse --abbrev-ref HEAD || echo unknown)" \
     git_commit "$(git_q rev-parse --short HEAD || echo unknown)" \
@@ -72,23 +86,44 @@ finish() {
     dirty_worktree "$([ -n "$(git_q status --porcelain)" ] && echo true || echo false)"
   ralph_status_update
   ralph_log "Runner exiting — status: $RUN_STATUS"
+  ralph_release_lock
 }
 trap finish EXIT
 
-# Run Claude once: tee output to the live log (so the dashboard streams it) and
-# echo it back for parsing. Exit code is irrelevant; we parse the text.
+# Run Claude once. Raw output (JSON envelope + any noise) is appended to the
+# raw log for post-mortems; the caller logs the extracted text to the live log.
 run_claude() {
-  "$RALF_CLAUDE_BIN" --permission-mode "$RALF_PERMISSION_MODE" -p "$1" 2>&1 | tee -a "$LIVE_LOG"
+  local args=(--permission-mode "$RALF_PERMISSION_MODE" --output-format json)
+  [ -n "$RALF_MAX_TURNS" ] && args+=(--max-turns "$RALF_MAX_TURNS")
+  "$RALF_CLAUDE_BIN" "${args[@]}" -p "$1" 2>&1 | tee -a "$RAW_LOG"
 }
 
-# Run Claude with usage-limit handling. On a limit: record it, wait past the
-# reset (locally, no tokens), and retry the SAME call. Returns 3 if the circuit
-# breaker trips; otherwise echoes the successful output and returns 0.
+# Map a supervised_claude breaker code to a final status and stop the runner.
+breaker_exit() { # $1 = return code, $2 = context
+  case "$1" in
+    3) RUN_STATUS="failed_rate_limit_max_retries" ;;
+    4) RUN_STATUS="failed_consecutive_failures" ;;
+    *) RUN_STATUS="failed_unknown" ;;
+  esac
+  ralph_log "Circuit breaker ($RUN_STATUS) during $2. Stopping cleanly."
+  exit 1
+}
+
+# Run Claude with supervision. Classifies every run:
+#   limit   → record it, wait past the reset (locally, no tokens), retry the
+#             SAME call; returns 3 when the rate-limit breaker trips.
+#   failure → short backoff, retry the SAME call; returns 4 when the failure
+#             breaker trips.
+#   success → echoes the assistant text and returns 0.
 supervised_claude() {
-  local prompt="$1" output retries target msg
+  local prompt="$1" output retries fails target msg
   while true; do
+    # A fresh attempt gets a fresh stop-gate budget (see .claude/hooks/verify.sh).
+    rm -f "$RALPH_DIR/stop-blocks"
     output="$(run_claude "$prompt")"
-    if ralph_detect_limit "$output"; then
+    ralph_classify_output "$output"
+
+    if [ "$RALPH_CLS" = "limit" ]; then
       retries=$(( $(jq -r '.rate_limit_retry_count // 0' "$STATE_FILE" 2>/dev/null) + 1 ))
       msg="$(printf '%s' "$output" | grep -iE "$RALF_LIMIT_PATTERNS" | head -1 | tr -d '\r' | cut -c1-200)"
       printf '[%s] retry %s/%s — %s\n' "$(date '+%F %T')" "$retries" "$RALF_RATE_LIMIT_MAX_RETRIES" "$msg" >> "$RATE_LIMIT_LOG"
@@ -109,22 +144,39 @@ supervised_claude() {
       ralph_status_update
       continue
     fi
-    # Success — this limit episode is over, reset the retry counter.
-    ralph_json_merge "$STATE_FILE" rate_limit_retry_count "0"
-    printf '%s' "$output"
+
+    if [ "$RALPH_CLS" = "failure" ]; then
+      fails=$(( $(jq -r '.consecutive_failures // 0' "$STATE_FILE" 2>/dev/null) + 1 ))
+      msg="$(printf '%s' "$RALPH_LAST_RESULT" | tr '\n' ' ' | cut -c1-200)"
+      ralph_log "Run failed ($fails/$RALF_MAX_CONSECUTIVE_FAILURES): $msg"
+      ralph_json_merge "$STATE_FILE" status "retrying_failure" consecutive_failures "$fails"
+      ralph_status_update
+      if [ "$fails" -ge "$RALF_MAX_CONSECUTIVE_FAILURES" ]; then
+        return 4
+      fi
+      sleep "$RALF_FAILURE_BACKOFF_SECONDS"
+      ralph_json_merge "$STATE_FILE" status "running"
+      ralph_status_update
+      continue
+    fi
+
+    # Success — this limit/failure episode is over, reset both counters.
+    ralph_json_merge "$STATE_FILE" rate_limit_retry_count "0" consecutive_failures "0"
+    ralph_log "$RALPH_LAST_RESULT"
+    printf '%s' "$RALPH_LAST_RESULT"
     return 0
   done
 }
 
 IMPLEMENT_PROMPT="$(cat <<'PROMPT'
-@PRD.md @progress.txt @learnings.txt @review.md
+@PRD.md @learnings.txt @review.md
 
 1. Read learnings.txt first — apply any relevant patterns.
-2. Fix any open gaps listed in review.md before picking a new task.
+2. Fix any open gaps listed in review.md before picking a new task. Mark the gaps you fixed as resolved in review.md; write NO GAPS when none remain.
 3. Find the highest-priority incomplete task in PRD.md and implement it fully (no stubs, no TODOs).
 4. Mark that task done in PRD.md by changing its checkbox from '- [ ]' to '- [x]'.
 5. Append a one-line summary to progress.txt.
-6. If you learned a reusable pattern, append it briefly to learnings.txt.
+6. If you learned a reusable pattern, append it briefly to learnings.txt. If learnings.txt has grown past ~40 lines, compact it (merge duplicates, drop stale entries) as part of this commit.
 7. Self-check before finishing: re-read your own diff — no stubs, scope matches the task, gates green.
 8. Commit ALL your changes in one conventional commit.
 
@@ -138,12 +190,12 @@ do_review() {
   ralph_json_merge "$STATE_FILE" current_task "review:$mode"; ralph_status_update
   ralph_log "--- Independent review ($mode) ---"
   if [ "$mode" = "full" ]; then
-    prompt="Use the reviewer subagent for a FULL pass: review all work against PRD.md, write gaps to review.md. If the PRD is fully implemented and there are NO GAPS, output exactly: <promise>COMPLETE</promise>"
+    prompt="Use the reviewer subagent for a FULL pass: review all work against PRD.md, write gaps to review.md. If the PRD is fully implemented and there are NO GAPS, end your reply with exactly this on its own final line: <promise>COMPLETE</promise>"
   else
-    prompt="Use the reviewer subagent for a CHEAP diff review: review ONLY the latest commit (git diff HEAD~1 HEAD) against the PRD task it claims to implement. Write gaps to review.md, else write NO GAPS. Output <promise>COMPLETE</promise> ONLY if the entire PRD is done."
+    prompt="Use the reviewer subagent for a CHEAP diff review: review ONLY the latest commit (git diff HEAD~1 HEAD) against the PRD task it claims to implement. Write gaps to review.md, else write NO GAPS. End your reply with <promise>COMPLETE</promise> on its own final line ONLY if the entire PRD is done."
   fi
-  out="$(supervised_claude "$prompt")" || { RUN_STATUS="failed_rate_limit_max_retries"; ralph_log "Circuit breaker tripped during review."; exit 1; }
-  printf '%s\n' "$out" | grep -q "<promise>COMPLETE</promise>"
+  out="$(supervised_claude "$prompt")" || breaker_exit "$?" "review:$mode"
+  ralph_review_complete "$out"
 }
 
 # ---------------------------------------------------------------------------
@@ -157,10 +209,27 @@ while [ "$i" -le "$ITERATIONS" ]; do
   ralph_status_update
   ralph_log "=== Loop $i/$ITERATIONS ==="
 
-  if ! output="$(supervised_claude "$IMPLEMENT_PROMPT")"; then
-    RUN_STATUS="failed_rate_limit_max_retries"
-    ralph_log "Circuit breaker: exceeded $RALF_RATE_LIMIT_MAX_RETRIES rate-limit retries. Stopping cleanly."
-    exit 1
+  head_before="$(git_q rev-parse HEAD || echo none)"
+  supervised_claude "$IMPLEMENT_PROMPT" >/dev/null || breaker_exit "$?" "implement#$i"
+
+  # Stall detection: an implement run that commits nothing made no progress —
+  # a wedged task, or `git commit` being denied (check permissions.allow).
+  head_after="$(git_q rev-parse HEAD || echo none)"
+  if [ "$head_after" = "$head_before" ]; then
+    stalls=$(( $(jq -r '.no_progress_count // 0' "$STATE_FILE" 2>/dev/null) + 1 ))
+    ralph_json_merge "$STATE_FILE" no_progress_count "$stalls"
+    ralph_status_update
+    ralph_log "No new commit after implement #$i ($stalls/$RALF_MAX_NO_PROGRESS)."
+    if [ "$stalls" -ge "$RALF_MAX_NO_PROGRESS" ]; then
+      RUN_STATUS="stalled_no_progress"
+      ralph_log "Stall breaker: $stalls consecutive iterations without a commit. Stopping cleanly."
+      exit 1
+    fi
+  else
+    ralph_json_merge "$STATE_FILE" no_progress_count "0"
+    if [ "$RALF_GIT_PUSH" = "1" ]; then
+      git_q push origin HEAD || ralph_log "git push failed (non-fatal)."
+    fi
   fi
 
   ralph_json_merge "$STATE_FILE" \
