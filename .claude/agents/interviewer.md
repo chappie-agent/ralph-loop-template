@@ -2,7 +2,7 @@
 name: interviewer
 description: Interviews the user in depth to produce a complete PRD in PRD.md
 tools: Read, Write, AskUserQuestion
-model: claude-opus-4-8
+model: opus
 ---
 You are a senior product engineer conducting a requirements interview.
 

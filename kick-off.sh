@@ -19,7 +19,10 @@ echo ""
 echo "Starting interview for: $description"
 echo ""
 
-claude -p "I want to build: $description
+# Interactive on purpose (no -p): the interviewer relies on AskUserQuestion,
+# which has no channel in headless print mode — a `-p` run would silently
+# "interview" nobody and write a PRD full of assumptions.
+claude "I want to build: $description
 
 Use the interviewer subagent to interview me in depth. The interviewer will use the AskUserQuestion tool to ask questions one at a time, covering the core flow, edge cases, error states, auth, data model, UI expectations, and what is explicitly out of scope.
 
