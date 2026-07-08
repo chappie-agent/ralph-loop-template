@@ -3,11 +3,18 @@
 # Usage: ./afk-ralph.sh [iterations] [review_interval]
 # Defaults: 20 iterations, review every 5.
 # Stops early when the reviewer outputs COMPLETE.
+#
+# Headless runs can't answer permission prompts — the permissions.allow rules
+# in .claude/settings.json (git commit, pnpm build/lint/test) are what make
+# this loop able to commit at all. To sandbox the runs, point RALF_CLAUDE_BIN
+# at a wrapper script (e.g. one that execs `docker sandbox run claude "$@"`).
 
 set -e
 
 ITERATIONS=${1:-20}
 REVIEW_INTERVAL=${2:-5}
+CLAUDE_BIN="${RALF_CLAUDE_BIN:-claude}"
+PERMISSION_MODE="${RALF_PERMISSION_MODE:-acceptEdits}"
 
 echo ""
 echo "Ralph AFK loop starting"
@@ -21,8 +28,8 @@ for ((i=1; i<=ITERATIONS; i++)); do
   echo "========================================"
 
   # ── 1. Implement (Stop hook enforces build + lint + tests) ──────────────
-  docker sandbox run claude --permission-mode acceptEdits -p \
-    "@PRD.md @progress.txt @learnings.txt @review.md
+  "$CLAUDE_BIN" --permission-mode "$PERMISSION_MODE" -p \
+    "@PRD.md @learnings.txt @review.md
 
     1. Read learnings.txt first — apply any relevant patterns.
     2. Fix any open gaps listed in review.md before picking a new task.
@@ -39,9 +46,9 @@ for ((i=1; i<=ITERATIONS; i++)); do
     echo ""
     echo "--- Independent review (after loop $i) ---"
 
-    result=$(docker sandbox run claude --permission-mode acceptEdits -p \
+    result=$("$CLAUDE_BIN" --permission-mode "$PERMISSION_MODE" -p \
       "Use the reviewer subagent to review the latest commit against PRD.md.
-      Write any gaps to review.md. If the PRD is fully implemented and there are NO GAPS, output exactly: <promise>COMPLETE</promise>")
+      Write any gaps to review.md. If the PRD is fully implemented and there are NO GAPS, end your reply with exactly this on its own final line: <promise>COMPLETE</promise>")
 
     echo "$result"
 
@@ -58,6 +65,6 @@ done
 # ── Final review after max iterations ──────────────────────────────────────
 echo ""
 echo "Max iterations ($ITERATIONS) reached. Running final review..."
-docker sandbox run claude --permission-mode acceptEdits -p \
+"$CLAUDE_BIN" --permission-mode "$PERMISSION_MODE" -p \
   "Use the reviewer subagent to review all work against PRD.md and write findings to review.md.
-  Output <promise>COMPLETE</promise> only if everything is done and review.md says NO GAPS."
+  End your reply with <promise>COMPLETE</promise> on its own final line only if everything is done and review.md says NO GAPS."

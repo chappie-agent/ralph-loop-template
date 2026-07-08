@@ -19,7 +19,12 @@ RUN_LOOP=0; ITERS=""
 # ---------------------------------------------------------------- tmux mode --
 if command -v tmux >/dev/null 2>&1; then
   S="ralph"
-  tmux kill-session -t "$S" 2>/dev/null || true
+  # Never kill an existing session here — it may contain a RUNNING loop
+  # (started with --run earlier). Attach instead; kill explicitly if needed.
+  if tmux has-session -t "$S" 2>/dev/null; then
+    echo "tmux session '$S' already exists — attaching. (Kill it first with: tmux kill-session -t $S)"
+    exec tmux attach -t "$S"
+  fi
   if [ "$RUN_LOOP" = "1" ]; then
     tmux new-session -d -s "$S" -n loop "./afk-ralph-supervised.sh $ITERS; echo; echo '[runner stopped — press a key]'; read -r _"
   else
@@ -41,13 +46,15 @@ while true; do
   clear
   echo "================ RALPH SUPERVISED MONITOR  $(date '+%H:%M:%S') ================"
   if [ -f "$STATUS_FILE" ]; then
-    jq -r '"status   : \(.status // "?")
-loop     : \(.loop // "?")
-task     : \(.task // "?")
-retries  : \(.retries // "0")
-reset_at : \(.reset_at // "-")
-commit   : \(.commit // "-")
-updated  : \(.updated // "-")"' "$STATUS_FILE" 2>/dev/null || echo "(unreadable status.json)"
+    jq -r '"status      : \(.status // "?")
+loop        : \(.loop // "?")
+task        : \(.task // "?")
+retries     : \(.retries // "0")
+failures    : \(.failures // "0")
+no_progress : \(.no_progress // "0")
+reset_at    : \(.reset_at // "-")
+commit      : \(.commit // "-")
+updated     : \(.updated // "-")"' "$STATUS_FILE" 2>/dev/null || echo "(unreadable status.json)"
   else
     echo "No .ralph/status.json yet — is the loop running?"
   fi
