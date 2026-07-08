@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Persistent project memory. Auto-loaded every session and **every Ralph loop**, so keep it lean — each line is re-read on every iteration and eats context. The per-iteration instructions live in the loop scripts (`ralph-once.sh` / `afk-ralph.sh`), not here. This file is the *what we build with and how*; `PRD.md` is the *what to build*.
+Persistent project memory. Auto-loaded every session and **every Ralph loop**, so keep it lean — each line is re-read on every iteration and eats context. The per-iteration instructions live in the loop scripts (`ralph-once.sh` / `afk-ralph.sh` / `afk-ralph-supervised.sh`), not here. This file is the *what we build with and how*; `PRD.md` is the *what to build*.
 
 > Tune this file like a guitar. When you watch the agent make a mistake, add a one-line "sign" to **Guardrails** instead of growing prose elsewhere.
 
@@ -26,11 +26,11 @@ Keep this list current per project.
 
 ## Connectors (MCP tools — prefer these over guessing or shelling out)
 
-> **Accounts:** use **chappie-agent** for the GitHub and Vercel MCPs.
+> **Accounts:** note here which account the GitHub and Vercel MCPs should use (fill in per project — don't commit personal addresses to a public template).
 
 - **Supabase MCP** — all database work. `list_tables` before any schema change; `apply_migration` for DDL (never raw `execute_sql` for schema); `execute_sql` for reads/data; `get_advisors` after every schema change to catch RLS/security gaps; `get_logs` when debugging; `generate_typescript_types` after schema changes.
 - **Vercel MCP** — deploy, and read **build + runtime logs** when a deploy or production error needs debugging.
-- **GitHub MCP** — branches, PRs, commit/CI status. The loop commits and pushes locally; use this to open PRs or check CI. All GitHub access goes through this MCP — don't shell out to `gh` or embed tokens. It is configured at **user scope** (`claude mcp add`, lives in `~/.claude.json`), so the token stays **outside the repo** — never commit a GitHub token.
+- **GitHub MCP** — branches, PRs, commit/CI status. The loop commits locally (set `RALF_GIT_PUSH=1` to also push each green iteration); use this to open PRs or check CI. All GitHub access goes through this MCP — don't shell out to `gh` or embed tokens. It is configured at **user scope** (`claude mcp add`, lives in `~/.claude.json`), so the token stays **outside the repo** — never commit a GitHub token.
 - **Context7 MCP** — before using an unfamiliar or version-sensitive library API, pull current docs instead of guessing.
 - **shadcn/ui MCP** — pull components and apply themes via the MCP rather than hand-writing component markup.
 - **Browser MCP** — verify UI changes: navigate to the page, interact, confirm, screenshot.
