@@ -26,7 +26,7 @@ Keep this list current per project.
 
 ## Connectors (MCP tools — prefer these over guessing or shelling out)
 
-> **Accounts:** note here which account the GitHub and Vercel MCPs should use (fill in per project — don't commit personal addresses to a public template).
+> **Accounts (why this note exists):** the GitHub and Vercel MCP connectors act *on behalf of a specific account*, so the loop must know which one to use — for this repo that is the **`chappie-agent`** GitHub account (and its matching Vercel account). Authorize those connectors with that account in your own MCP settings. The account **handle** lives here on purpose so the agent picks the right identity; **no e-mail address, token, or credential ever belongs in this file or any commit** — git history is public and permanent. Fill in your own handle per project.
 
 - **Supabase MCP** — all database work. `list_tables` before any schema change; `apply_migration` for DDL (never raw `execute_sql` for schema); `execute_sql` for reads/data; `get_advisors` after every schema change to catch RLS/security gaps; `get_logs` when debugging; `generate_typescript_types` after schema changes.
 - **Vercel MCP** — deploy, and read **build + runtime logs** when a deploy or production error needs debugging.
@@ -36,6 +36,16 @@ Keep this list current per project.
 - **Browser MCP** — verify UI changes: navigate to the page, interact, confirm, screenshot.
 
 **Rule:** if a dedicated MCP exists for the job, use it. Don't invent APIs or guess library syntax — check Context7 first.
+
+## Committing & pushing (make the right call every loop)
+
+The loop's git history is public and permanent, so each commit/push is a deliberate choice:
+
+- **Never leak a personal e-mail.** Commit author metadata is published forever. Before the first commit, confirm git is set to a GitHub **noreply** address — `git config user.email "<handle>@users.noreply.github.com"` — and enable "Keep my email address private" on GitHub. Never author commits with a personal `@gmail.com`-style address. (Use a handle, never an e-mail, when a file must reference an account.)
+- **Commit after each completed task**, all related changes in one **conventional commit** (`feat:` / `fix:` / `chore:` / `refactor:`), and only once the quality gates are green — the Stop hook enforces build + lint + tests.
+- **Never commit secrets or personal data.** No `.env*`, no tokens/keys, no real people's e-mails or names in tracked files. When in doubt, leave it out and use an env var.
+- **Pushing is opt-in and additive.** Push only when the run is configured for it (`RALF_GIT_PUSH=1`) or you're explicitly asked, and push the current branch (`git push origin HEAD`). **Never `--force` a shared branch** — rewriting published history is a human decision, not the loop's.
+- **Prefer the GitHub MCP** for branches, PRs and CI status instead of shelling out with an embedded token; the connector already holds credentials at user scope, outside the repo.
 
 ## Code conventions
 
